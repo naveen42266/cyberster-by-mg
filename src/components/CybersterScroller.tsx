@@ -111,7 +111,7 @@ export const CybersterScroller: React.FC = () => {
   const [prevView, setPrevView] = useState<ViewAngle | null>(null);
   const [fitMode, setFitMode] = useState<'cover' | 'contain'>('cover');
   const [activeFrameIndex, setActiveFrameIndex] = useState<number>(0);
-  const [displayPercent, setDisplayPercent] = useState<number>(0);
+  // const [displayPercent, setDisplayPercent] = useState<number>(0);
   const [loadedCount, setLoadedCount] = useState<number>(0);
   const [isInitialReady, setIsInitialReady] = useState<boolean>(false);
 
@@ -218,7 +218,7 @@ export const CybersterScroller: React.FC = () => {
       totalFrames - 1
     );
     setActiveFrameIndex((prev) => (prev !== nearestIndex ? nearestIndex : prev));
-    setDisplayPercent((prev) => (prev !== roundedPercent ? roundedPercent : prev));
+    // setDisplayPercent((prev) => (prev !== roundedPercent ? roundedPercent : prev));
   }, []);
 
   // Smooth Animation Loop with LERP Damping
@@ -275,21 +275,21 @@ export const CybersterScroller: React.FC = () => {
   }, []);
 
   // Jump to specific frame on checkpoint click
-  const scrollToFrame = (index: number) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const scrollTop = window.scrollY || window.pageYOffset;
-    const containerTop = rect.top + scrollTop;
-    const totalScrollable = rect.height - window.innerHeight;
+  // const scrollToFrame = (index: number) => {
+  //   if (!containerRef.current) return;
+  //   const rect = containerRef.current.getBoundingClientRect();
+  //   const scrollTop = window.scrollY || window.pageYOffset;
+  //   const containerTop = rect.top + scrollTop;
+  //   const totalScrollable = rect.height - window.innerHeight;
 
-    const targetFraction = index / 4;
-    const targetScrollY = containerTop + targetFraction * totalScrollable;
+  //   const targetFraction = index / 4;
+  //   const targetScrollY = containerTop + targetFraction * totalScrollable;
 
-    window.scrollTo({
-      top: targetScrollY,
-      behavior: 'smooth',
-    });
-  };
+  //   window.scrollTo({
+  //     top: targetScrollY,
+  //     behavior: 'smooth',
+  //   });
+  // };
 
   // Switch View Angle with Cinematic Transition
   const switchView = useCallback(
