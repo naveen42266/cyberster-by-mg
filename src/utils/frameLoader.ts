@@ -1,26 +1,26 @@
-// Auto-load and sort all 108 WebP frames across the 4 cinematic beats
+// Auto-load and sort all 108 png frames across the 4 cinematic beats
 
 // Beat 1: Exterior Front (24 frames)
 const beat1Glob = import.meta.glob<{ default: string }>(
-  '../assets/segment/beat1_exterior_front/*.webp',
+  '../assets/segment/beat1_exterior_front/*.png',
   { eager: true }
 );
 
 // Beat 2: Orbital Sweep (30 frames)
 const beat2Glob = import.meta.glob<{ default: string }>(
-  '../assets/segment/beat2_orbital_sweep/*.webp',
+  '../assets/segment/beat2_orbital_sweep/*.png',
   { eager: true }
 );
 
 // Beat 3: Aerial Rise (24 frames)
 const beat3Glob = import.meta.glob<{ default: string }>(
-  '../assets/segment/beat3_aerial_rise/*.webp',
+  '../assets/segment/beat3_aerial_rise/*.png',
   { eager: true }
 );
 
 // Beat 4: Cockpit Dive (30 frames)
 const beat4Glob = import.meta.glob<{ default: string }>(
-  '../assets/segment/beat4_cockpit_dive/*.webp',
+  '../assets/segment/beat4_cockpit_dive/*.png',
   { eager: true }
 );
 
