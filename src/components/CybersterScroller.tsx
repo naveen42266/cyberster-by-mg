@@ -11,7 +11,7 @@ export const CybersterScroller: React.FC = () => {
   const [isInitialReady, setIsInitialReady] = useState<boolean>(false);
 
   // Active frame and progress tracking
-  const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(0);
+  // const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(0);
   const [activeBeat, setActiveBeat] = useState<BeatInfo>(BEATS[0]);
   const [displayPercent, setDisplayPercent] = useState<number>(0);
 
@@ -131,7 +131,7 @@ export const CybersterScroller: React.FC = () => {
 
       if (targetIdx !== lastDrawnIndex.current) {
         drawFrame(targetIdx);
-        setCurrentFrameIndex(targetIdx);
+        // setCurrentFrameIndex(targetIdx);
 
         // Find which beat this frame belongs to
         const foundBeat = BEATS.find(
@@ -176,21 +176,21 @@ export const CybersterScroller: React.FC = () => {
   }, []);
 
   // Jump to specific Beat on Click
-  const scrollToBeat = (beat: BeatInfo) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const scrollTop = window.scrollY || window.pageYOffset;
-    const containerTop = rect.top + scrollTop;
-    const totalScrollable = rect.height - window.innerHeight;
+  // const scrollToBeat = (beat: BeatInfo) => {
+  //   if (!containerRef.current) return;
+  //   const rect = containerRef.current.getBoundingClientRect();
+  //   const scrollTop = window.scrollY || window.pageYOffset;
+  //   const containerTop = rect.top + scrollTop;
+  //   const totalScrollable = rect.height - window.innerHeight;
 
-    const targetFraction = beat.startFrame / (totalFrames - 1);
-    const targetScrollY = containerTop + targetFraction * totalScrollable;
+  //   const targetFraction = beat.startFrame / (totalFrames - 1);
+  //   const targetScrollY = containerTop + targetFraction * totalScrollable;
 
-    window.scrollTo({
-      top: targetScrollY,
-      behavior: 'smooth',
-    });
-  };
+  //   window.scrollTo({
+  //     top: targetScrollY,
+  //     behavior: 'smooth',
+  //   });
+  // };
 
   return (
     <div
