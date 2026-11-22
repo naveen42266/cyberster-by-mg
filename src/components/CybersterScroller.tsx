@@ -1,145 +1,289 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { ALL_FRAMES, BEATS, BeatInfo } from '../utils/frameLoader';
 
+// --- Tuning Knobs ---
+const SCROLL_HEIGHT_VH = 900;     // Higher = slower, more cinematic scrub (was 520)
+const DAMPING_SPEED = 6.5;        // Lower = heavier camera inertia (try 4.5 - 8.0)
+const ENABLE_FRAME_BLEND = true;  // Crossfades between frame N and N+1 for silky motion
+const CONCURRENT_LOADS = 6;       // Prevents network congestion during preload
+const INITIAL_READY_FRAMES = 30;  // Frames decoded before dismissing splash screen
+
+type FrameSource = ImageBitmap | HTMLImageElement;
+
+function getSourceDimensions(src: FrameSource) {
+  if (typeof ImageBitmap !== 'undefined' && src instanceof ImageBitmap) {
+    return { width: src.width, height: src.height };
+  }
+  const img = src as HTMLImageElement;
+  return { width: img.naturalWidth, height: img.naturalHeight };
+}
+
 export const CybersterScroller: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const percentTextRef = useRef<HTMLSpanElement>(null);
 
-  // Cached HTMLImageElements in memory
-  const imagesRef = useRef<HTMLImageElement[]>([]);
+  // Decoded frames cached in GPU/RAM
+  const framesRef = useRef<(FrameSource | null)[]>(
+    new Array(ALL_FRAMES.length).fill(null)
+  );
+
   const [loadedCount, setLoadedCount] = useState<number>(0);
   const [isInitialReady, setIsInitialReady] = useState<boolean>(false);
-
-  // Active frame and progress tracking
-  // const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(0);
   const [activeBeat, setActiveBeat] = useState<BeatInfo>(BEATS[0]);
-  const [displayPercent, setDisplayPercent] = useState<number>(0);
 
-  // Smooth LERP (Linear Interpolation) refs
+  // Animation loop refs (zero React re-renders during scroll)
   const targetProgress = useRef<number>(0);
   const currentProgress = useRef<number>(0);
-  const lastDrawnIndex = useRef<number>(-1);
+  const lastDrawnFrameFloat = useRef<number>(-1);
+  const lastBeatId = useRef<number>(BEATS[0].id);
+  const lastPercent = useRef<number>(-1);
   const animFrameId = useRef<number | null>(null);
 
-  const totalFrames = ALL_FRAMES.length; // 108 frames
+  const totalFrames = ALL_FRAMES.length; // 108
 
-  // 1. Preload all 108 WebP frames into memory
-  useEffect(() => {
-    let loaded = 0;
-    const imgs: HTMLImageElement[] = [];
+  // Find exact frame, or fall back to nearest loaded frame to prevent "buffering" freezes
+  const getBestFrame = useCallback((index: number): FrameSource | null => {
+    const frames = framesRef.current;
+    if (frames[index]) return frames[index];
 
-    ALL_FRAMES.forEach((src, idx) => {
-      const img = new Image();
-      img.src = src;
+    for (let offset = 1; offset < totalFrames; offset++) {
+      if (index - offset >= 0 && frames[index - offset]) return frames[index - offset];
+      if (index + offset < totalFrames && frames[index + offset]) return frames[index + offset];
+    }
+    return null;
+  }, [totalFrames]);
 
-      const onImageLoaded = () => {
-        loaded += 1;
-        setLoadedCount(loaded);
-
-        // When Beat 1 (24 frames) is loaded, visualizer is ready to experience immediately
-        if (loaded >= 24 && !isInitialReady) {
-          setIsInitialReady(true);
-        }
-      };
-
-      img.onload = onImageLoaded;
-      img.onerror = onImageLoaded;
-      imgs[idx] = img;
-    });
-
-    imagesRef.current = imgs;
-  }, [isInitialReady]);
-
-  // 2. High-DPI Canvas Draw with Aspect Ratio "Cover" Math
-  const drawFrame = useCallback((frameIdx: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const img = imagesRef.current[frameIdx];
-    if (!img || !img.complete || img.naturalWidth === 0) return;
-
-    const canvasWidth = canvas.width;
-    const canvasHeight = canvas.height;
-
-    // Enable high-quality bicubic smoothing
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
-    // Calculate aspect ratio "cover" scale
-    const imgWidth = img.naturalWidth;
-    const imgHeight = img.naturalHeight;
+  // Draw a single source with "cover" math
+  const drawSourceCover = (
+    ctx: CanvasRenderingContext2D,
+    src: FrameSource,
+    canvasWidth: number,
+    canvasHeight: number
+  ) => {
+    const { width: imgWidth, height: imgHeight } = getSourceDimensions(src);
+    if (!imgWidth || !imgHeight) return;
 
     const scale = Math.max(canvasWidth / imgWidth, canvasHeight / imgHeight);
     const renderWidth = imgWidth * scale;
     const renderHeight = imgHeight * scale;
-
     const offsetX = (canvasWidth - renderWidth) / 2;
     const offsetY = (canvasHeight - renderHeight) / 2;
 
-    ctx.drawImage(img, offsetX, offsetY, renderWidth, renderHeight);
-    lastDrawnIndex.current = frameIdx;
-  }, []);
+    ctx.drawImage(src, offsetX, offsetY, renderWidth, renderHeight);
+  };
 
-  // 3. Resize Canvas to match device pixel ratio for ultra-crisp Retina sharpness
+  // High-DPI Canvas Renderer with optional sub-frame crossfade
+  const drawFrame = useCallback(
+    (exactFrame: number) => {
+      const canvas = canvasRef.current;
+      const ctx = ctxRef.current;
+      if (!canvas || !ctx) return;
+
+      const clamped = Math.min(Math.max(exactFrame, 0), totalFrames - 1);
+      const baseIdx = Math.floor(clamped);
+      const nextIdx = Math.min(baseIdx + 1, totalFrames - 1);
+      const blendAlpha = clamped - baseIdx;
+
+      const baseFrame = getBestFrame(baseIdx);
+      if (!baseFrame) return;
+
+      const { width, height } = canvas;
+
+      ctx.globalAlpha = 1;
+      drawSourceCover(ctx, baseFrame, width, height);
+
+      // Subtle sub-frame crossfade eliminates discrete stepping at slow scroll speeds
+      if (ENABLE_FRAME_BLEND && blendAlpha > 0.02 && nextIdx !== baseIdx) {
+        const nextFrame = framesRef.current[nextIdx];
+        if (nextFrame) {
+          ctx.globalAlpha = blendAlpha;
+          drawSourceCover(ctx, nextFrame, width, height);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      lastDrawnFrameFloat.current = clamped;
+    },
+    [getBestFrame, totalFrames]
+  );
+
+  // 1. Preload & Decode all frames ONCE using a controlled worker queue
+  useEffect(() => {
+    let cancelled = false;
+    let nextIndex = 0;
+    let completed = 0;
+    let readyTriggered = false;
+
+    const loadSingleFrame = async (idx: number) => {
+      try {
+        const res = await fetch(ALL_FRAMES[idx]);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+
+        if (cancelled) return;
+
+        let source: FrameSource;
+        if (typeof createImageBitmap === 'function') {
+          // Decodes image off the main thread — prevents scroll stutter
+          source = await createImageBitmap(blob);
+        } else {
+          const img = new Image();
+          img.src = URL.createObjectURL(blob);
+          await img.decode();
+          source = img;
+        }
+
+        if (cancelled) {
+          if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
+            source.close();
+          }
+          return;
+        }
+
+        framesRef.current[idx] = source;
+
+        // Immediately paint frame 0 as soon as it arrives
+        if (idx === 0 && lastDrawnFrameFloat.current < 0) {
+          drawFrame(0);
+        }
+      } catch {
+        // Fallback to standard Image element if fetch/createImageBitmap fails
+        await new Promise<void>((resolve) => {
+          const img = new Image();
+          img.src = ALL_FRAMES[idx];
+          img.onload = () => {
+            if (!cancelled) framesRef.current[idx] = img;
+            resolve();
+          };
+          img.onerror = () => resolve();
+        });
+      } finally {
+        if (!cancelled) {
+          completed += 1;
+
+          // Only update React loading bar while splash screen is visible
+          if (!readyTriggered) {
+            setLoadedCount(completed);
+            if (completed >= Math.min(INITIAL_READY_FRAMES, totalFrames)) {
+              readyTriggered = true;
+              setIsInitialReady(true);
+            }
+          }
+        }
+      }
+    };
+
+    const worker = async () => {
+      while (!cancelled && nextIndex < totalFrames) {
+        const current = nextIndex++;
+        await loadSingleFrame(current);
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(CONCURRENT_LOADS, totalFrames) },
+      () => worker()
+    );
+    Promise.all(workers);
+
+    return () => {
+      cancelled = true;
+      framesRef.current.forEach((src) => {
+        if (typeof ImageBitmap !== 'undefined' && src instanceof ImageBitmap) {
+          src.close();
+        }
+      });
+      framesRef.current = new Array(totalFrames).fill(null);
+    };
+  }, [drawFrame, totalFrames]);
+
+  // 2. Canvas initialization & DPR resize handling
   const handleResize = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const displayWidth = window.innerWidth;
-    const displayHeight = window.innerHeight;
-
-    if (canvas.width !== displayWidth * dpr || canvas.height !== displayHeight * dpr) {
-      canvas.width = displayWidth * dpr;
-      canvas.height = displayHeight * dpr;
+    if (!ctxRef.current) {
+      // alpha: false tells the browser the canvas is opaque (faster compositing)
+      ctxRef.current = canvas.getContext('2d', { alpha: false });
     }
 
-    if (lastDrawnIndex.current >= 0) {
-      drawFrame(lastDrawnIndex.current);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const targetW = Math.floor(window.innerWidth * dpr);
+    const targetH = Math.floor(window.innerHeight * dpr);
+
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      if (ctxRef.current) {
+        ctxRef.current.imageSmoothingEnabled = true;
+        ctxRef.current.imageSmoothingQuality = 'high';
+      }
+    }
+
+    if (lastDrawnFrameFloat.current >= 0) {
+      drawFrame(lastDrawnFrameFloat.current);
+    } else {
+      drawFrame(0);
     }
   }, [drawFrame]);
 
   useEffect(() => {
-    window.addEventListener('resize', handleResize);
     handleResize();
+    window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [handleResize]);
 
-  // 4. Smooth Animation Loop with LERP Damping (60 - 120 FPS)
+  // 3. Delta-Time Damped Render Loop (consistent speed on 60Hz, 90Hz, 120Hz+)
   useEffect(() => {
     let running = true;
+    let lastTime = performance.now();
 
-    const renderLoop = () => {
+    const renderLoop = (now: number) => {
       if (!running) return;
 
-      const diff = targetProgress.current - currentProgress.current;
+      // Clamp dt so tab-switching doesn't cause a huge jump
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
 
-      // 0.085 lerp factor creates realistic camera inertia and mechanical glide
-      if (Math.abs(diff) > 0.0001) {
-        currentProgress.current += diff * 0.085;
-      } else if (currentProgress.current !== targetProgress.current) {
+      const diff = targetProgress.current - currentProgress.current;
+      if (Math.abs(diff) > 0.00005) {
+        const factor = 1 - Math.exp(-DAMPING_SPEED * dt);
+        currentProgress.current += diff * factor;
+      } else {
         currentProgress.current = targetProgress.current;
       }
 
       const progress = Math.min(Math.max(currentProgress.current, 0), 1);
-      const targetIdx = Math.min(Math.floor(progress * totalFrames), totalFrames - 1);
+      const exactFrame = progress * (totalFrames - 1);
 
-      if (targetIdx !== lastDrawnIndex.current) {
-        drawFrame(targetIdx);
-        // setCurrentFrameIndex(targetIdx);
+      // Only repaint when movement is visually noticeable
+      const threshold = ENABLE_FRAME_BLEND ? 0.015 : 0.5;
+      const shouldRedraw = ENABLE_FRAME_BLEND
+        ? Math.abs(exactFrame - lastDrawnFrameFloat.current) >= threshold
+        : Math.round(exactFrame) !== Math.round(lastDrawnFrameFloat.current);
 
-        // Find which beat this frame belongs to
-        const foundBeat = BEATS.find(
-          (b) => targetIdx >= b.startFrame && targetIdx <= b.endFrame
-        ) || BEATS[0];
+      if (shouldRedraw) {
+        drawFrame(ENABLE_FRAME_BLEND ? exactFrame : Math.round(exactFrame));
 
-        setActiveBeat((prev) => (prev.id !== foundBeat.id ? foundBeat : prev));
-        setDisplayPercent(Math.round(progress * 100));
+        // Update percentage directly in the DOM (no React re-render)
+        const pct = Math.round(progress * 100);
+        if (pct !== lastPercent.current && percentTextRef.current) {
+          lastPercent.current = pct;
+          percentTextRef.current.textContent = `${pct}%`;
+        }
+
+        // Only trigger React state when crossing into a new Act (4 times total)
+        const frameIdx = Math.round(exactFrame);
+        const foundBeat =
+          BEATS.find((b) => frameIdx >= b.startFrame && frameIdx <= b.endFrame) ||
+          BEATS[0];
+
+        if (foundBeat.id !== lastBeatId.current) {
+          lastBeatId.current = foundBeat.id;
+          setActiveBeat(foundBeat);
+        }
       }
 
       animFrameId.current = requestAnimationFrame(renderLoop);
@@ -149,72 +293,46 @@ export const CybersterScroller: React.FC = () => {
 
     return () => {
       running = false;
-      if (animFrameId.current) {
-        cancelAnimationFrame(animFrameId.current);
-      }
+      if (animFrameId.current) cancelAnimationFrame(animFrameId.current);
     };
   }, [drawFrame, totalFrames]);
 
-  // 5. Scroll listener calculating normalized progress (0.0 to 1.0)
+  // 4. Passive Scroll Listener
   useEffect(() => {
     const handleScroll = () => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
       const totalScrollable = rect.height - window.innerHeight;
-
       if (totalScrollable <= 0) return;
 
-      const currentScroll = -rect.top;
-      const progress = Math.min(Math.max(currentScroll / totalScrollable, 0), 1);
+      const progress = Math.min(Math.max(-rect.top / totalScrollable, 0), 1);
       targetProgress.current = progress;
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
-
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-
-  // Jump to specific Beat on Click
-  // const scrollToBeat = (beat: BeatInfo) => {
-  //   if (!containerRef.current) return;
-  //   const rect = containerRef.current.getBoundingClientRect();
-  //   const scrollTop = window.scrollY || window.pageYOffset;
-  //   const containerTop = rect.top + scrollTop;
-  //   const totalScrollable = rect.height - window.innerHeight;
-
-  //   const targetFraction = beat.startFrame / (totalFrames - 1);
-  //   const targetScrollY = containerTop + targetFraction * totalScrollable;
-
-  //   window.scrollTo({
-  //     top: targetScrollY,
-  //     behavior: 'smooth',
-  //   });
-  // };
 
   return (
     <div
       ref={containerRef}
       className="relative w-full bg-black text-white"
-      style={{ height: '520vh' }} // 520vh provides ample cinematic scrub travel for 108 frames
+      style={{ height: `${SCROLL_HEIGHT_VH}vh` }}
     >
       {/* Sticky Fullscreen Cinematic Viewport */}
       <div className="sticky top-0 h-screen w-full overflow-hidden select-none bg-black">
-        {/* Fullscreen HTML5 Canvas Frame Renderer */}
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{
-            imageRendering: 'auto',
-            filter: 'contrast(1.03) brightness(1.01)',
-          }}
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ willChange: 'transform' }}
         />
 
         {/* Ambient Cinema Vignette & Gradients */}
         <div className="absolute inset-0 pointer-events-none z-10">
           <div className="absolute top-0 inset-x-0 h-36 bg-gradient-to-b from-black/85 via-black/40 to-transparent" />
           <div className="absolute bottom-0 inset-x-0 h-48 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
-          <div className="absolute inset-0 bg-radial-gradient from-transparent via-transparent to-black/40" />
         </div>
 
         {/* Loading Splash */}
@@ -230,19 +348,21 @@ export const CybersterScroller: React.FC = () => {
             <div className="w-56 h-1.5 bg-neutral-900 rounded-full overflow-hidden border border-neutral-800">
               <div
                 className="h-full bg-gradient-to-r from-red-600 to-rose-400 transition-all duration-150"
-                style={{ width: `${Math.min((loadedCount / totalFrames) * 100, 100)}%` }}
+                style={{
+                  width: `${Math.min((loadedCount / INITIAL_READY_FRAMES) * 100, 100)}%`,
+                }}
               />
             </div>
             <span className="text-[10px] font-mono text-neutral-500 mt-2">
-              {loadedCount} / {totalFrames} Frames Buffered
+              {loadedCount} / {INITIAL_READY_FRAMES} Keyframes Ready
             </span>
           </div>
         )}
 
-        {/* Top Header & Cyberster Branding */}
-        <header className="absolute top-0 inset-x-0 z-30 px-6 sm:px-12 pt-6 flex items-center justify-between pointer-events-none">
+        {/* Top Header (offset below fixed nav in index.tsx) */}
+        <header className="absolute top-16 inset-x-0 z-30 px-6 sm:px-12 pt-4 flex items-center justify-between pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3">
-            <span className="text-red-500 font-extrabold tracking-widest text-xs uppercase px-2.5 py-1 border border-red-500/40 rounded-md bg-neutral-950/80 backdrop-blur-md">
+            <span className="text-red-500 font-extrabold tracking-widest text-xs uppercase px-2.5 py-1 border border-red-500/40 rounded-md bg-neutral-950/80">
               MG
             </span>
             <div>
@@ -255,27 +375,30 @@ export const CybersterScroller: React.FC = () => {
             </div>
           </div>
 
-          {/* Act Badge & Live Frame Telemetry */}
+          {/* Act Badge & Live Percentage */}
           <div className="pointer-events-auto flex items-center gap-3">
-            <div className="flex items-center gap-3 bg-neutral-950/85 backdrop-blur-md border border-neutral-800/90 rounded-full px-4 py-1.5 shadow-2xl">
+            <div className="flex items-center gap-3 bg-neutral-950/85 border border-neutral-800/90 rounded-full px-4 py-1.5 shadow-2xl">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600" />
               </span>
               <span className="text-xs font-bold tracking-wider text-neutral-200">
                 ACT {activeBeat.id} / 4
               </span>
               <div className="h-3 w-px bg-neutral-700" />
-              <span className="text-xs font-mono font-bold text-red-500 min-w-[3ch] text-right">
-                {displayPercent}%
+              <span
+                ref={percentTextRef}
+                className="text-xs font-mono font-bold text-red-500 min-w-[3ch] text-right"
+              >
+                0%
               </span>
             </div>
           </div>
         </header>
 
-        {/* Dynamic Storytelling Text Overlay (Synced to current Beat) */}
-        <div className="absolute left-6 sm:left-14 top-24 sm:top-28 z-20 pointer-events-none max-w-lg transition-all duration-500">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-red-500/30 bg-red-950/40 backdrop-blur text-red-400 text-[11px] font-mono tracking-widest uppercase mb-3">
+        {/* Dynamic Storytelling Text Overlay */}
+        <div className="absolute left-6 sm:left-14 top-36 sm:top-40 z-20 pointer-events-none max-w-lg transition-all duration-500">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-red-500/30 bg-red-950/60 text-red-400 text-[11px] font-mono tracking-widest uppercase mb-3">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             {activeBeat.tagline}
           </div>
@@ -287,91 +410,10 @@ export const CybersterScroller: React.FC = () => {
           <p className="text-xs sm:text-sm text-neutral-300 mt-3 leading-relaxed drop-shadow-md">
             {activeBeat.description}
           </p>
-
-          {/* <div className="mt-4 flex items-center gap-2 text-[11px] font-mono text-neutral-400 bg-neutral-950/60 backdrop-blur px-3 py-1.5 rounded-lg border border-neutral-800/80 w-fit">
-            <span className="text-red-500">TELEMETRY:</span>
-            <span>{activeBeat.telemetry}</span>
-          </div> */}
         </div>
 
-        {/* Bottom Cinema Dashboard & Navigation */}
+        {/* Bottom Specs Strip */}
         <footer className="absolute bottom-0 inset-x-0 z-30 px-6 sm:px-12 pb-6 flex flex-col items-center gap-3 pointer-events-none">
-          {/* Scroll Cue Guidance */}
-          {/* <div className="pointer-events-auto flex items-center gap-2 text-xs font-medium text-neutral-200 bg-neutral-950/80 border border-neutral-800/80 px-5 py-2 rounded-full backdrop-blur-md shadow-2xl">
-            <svg
-              className={`w-3.5 h-3.5 text-red-500 transition-transform duration-300 ${displayPercent > 90 ? 'rotate-180' : 'animate-bounce'
-                }`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
-            <span>
-              {displayPercent >= 98
-                ? 'Scroll up to exit cockpit • Full immersion reached'
-                : displayPercent <= 4
-                  ? 'Scroll down to initiate scissor doors & dive into cockpit'
-                  : 'Keep scrolling to advance camera journey • Reverse on scroll up'}
-            </span>
-          </div> */}
-
-          {/* Interactive 4-Act Stepper & Scrub Bar */}
-          {/* <div className="pointer-events-auto w-full max-w-2xl bg-neutral-950/85 backdrop-blur-xl border border-neutral-800/90 rounded-2xl p-4 shadow-2xl">
-            <div className="flex items-center justify-between text-[10px] font-mono text-neutral-400 mb-2">
-              <span className="text-white font-bold">
-                FRAME {String(currentFrameIndex + 1).padStart(3, '0')} / {totalFrames}
-              </span>
-              <span className="text-red-500 font-bold uppercase">
-                {activeBeat.name}
-              </span>
-            </div>
-
-            <div className="relative w-full h-2 bg-neutral-900 rounded-full overflow-hidden mb-3.5 border border-neutral-800">
-              <div
-                className="h-full bg-gradient-to-r from-red-600 via-rose-500 to-amber-400 rounded-full shadow-[0_0_14px_rgba(220,38,38,0.8)] transition-all duration-75"
-                style={{ width: `${Math.max(displayPercent, 2)}%` }}
-              />
-            </div>
-
-            <div className="grid grid-cols-4 gap-2">
-              {BEATS.map((beat) => {
-                const isSelected = activeBeat.id === beat.id;
-
-                return (
-                  <button
-                    key={beat.id}
-                    onClick={() => scrollToBeat(beat)}
-                    className={`group flex flex-col items-center gap-1 p-2 rounded-xl border transition-all ${isSelected
-                      ? 'bg-neutral-900/90 border-red-600 shadow-[0_0_15px_rgba(220,38,38,0.3)]'
-                      : 'bg-neutral-950/50 border-neutral-800/80 hover:border-neutral-700 text-neutral-500'
-                      }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-red-500 animate-pulse' : 'bg-neutral-600'
-                          }`}
-                      />
-                      <span
-                        className={`text-[10px] font-mono font-bold tracking-wider ${isSelected ? 'text-white' : 'text-neutral-400'
-                          }`}
-                      >
-                        ACT 0{beat.id}
-                      </span>
-                    </div>
-                    <span
-                      className={`text-[9px] font-mono uppercase tracking-widest hidden sm:block truncate ${isSelected ? 'text-red-400 font-semibold' : 'text-neutral-500'
-                        }`}
-                    >
-                      {beat.name}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div> */}
-
-          {/* Quick Specifications Strip */}
           <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-8 text-neutral-400 text-[11px] font-mono uppercase tracking-wider">
             <div>
               <span className="text-neutral-600">POWERTRAIN:</span>{' '}
