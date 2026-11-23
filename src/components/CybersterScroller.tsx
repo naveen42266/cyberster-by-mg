@@ -360,7 +360,7 @@ export const CybersterScroller: React.FC = () => {
         )}
 
         {/* Top Header (offset below fixed nav in index.tsx) */}
-        <header className="absolute top-16 inset-x-0 z-30 px-6 sm:px-12 pt-4 flex items-center justify-between pointer-events-none">
+        {/* <header className="absolute top-16 inset-x-0 z-30 px-6 sm:px-12 pt-4 flex items-center justify-between pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3">
             <span className="text-red-500 font-extrabold tracking-widest text-xs uppercase px-2.5 py-1 border border-red-500/40 rounded-md bg-neutral-950/80">
               MG
@@ -375,7 +375,6 @@ export const CybersterScroller: React.FC = () => {
             </div>
           </div>
 
-          {/* Act Badge & Live Percentage */}
           <div className="pointer-events-auto flex items-center gap-3">
             <div className="flex items-center gap-3 bg-neutral-950/85 border border-neutral-800/90 rounded-full px-4 py-1.5 shadow-2xl">
               <span className="relative flex h-2 w-2">
@@ -394,10 +393,10 @@ export const CybersterScroller: React.FC = () => {
               </span>
             </div>
           </div>
-        </header>
+        </header> */}
 
         {/* Dynamic Storytelling Text Overlay */}
-        <div className="absolute left-6 sm:left-14 top-36 sm:top-40 z-20 pointer-events-none max-w-lg transition-all duration-500">
+        <div className="absolute left-6 sm:left-14 top-36 sm:top-32 z-20 pointer-events-none max-w-lg transition-all duration-500">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-red-500/30 bg-red-950/60 text-red-400 text-[11px] font-mono tracking-widest uppercase mb-3">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             {activeBeat.tagline}
@@ -434,7 +433,7 @@ export const CybersterScroller: React.FC = () => {
           </div>
         </footer>
       </div>
-    </div>
+    </div >
   );
 };
 
