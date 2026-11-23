@@ -314,7 +314,7 @@ const Home: React.FC = () => {
             <span>Credits go to <strong className="text-neutral-300">MG Motor</strong></span>
             <span className="text-neutral-700">•</span>
             <span className="text-neutral-400">
-              Designed & Developed by <strong className="text-white hover:text-red-500 transition-colors">Naveen</strong>
+              Designed & Developed by <a href="https://vnaveen.netlify.app/"><strong className="text-white hover:text-red-500 transition-colors">Naveen</strong></a>
             </span>
           </div>
         </div>
